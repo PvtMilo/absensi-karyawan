@@ -1,0 +1,6 @@
+__pycache__
+venv
+
+# keep folder, ignore contents
+uploads/selfies/*
+!uploads/selfies/.gitkeep
