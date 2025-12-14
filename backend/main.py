@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import File, UploadFile, Form
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
+from typing import Optional, List
 
 from database import Base, engine, SessionLocal
 import models
@@ -21,8 +22,8 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI()
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-OFFICE_LAT = -6.175392   # contoh: Monas (ganti ke koordinat kantor kamu)
-OFFICE_LNG = 106.827153
+OFFICE_LAT = -6.172848466321243   # contoh: Monas (ganti ke koordinat kantor kamu)
+OFFICE_LNG = 106.77366582830899
 OFFICE_RADIUS_M = 150    # radius sah (meter)
 MAX_ACCURACY_M = 200     # kalau GPS akurasinya jelek banget, tolak
 
@@ -165,6 +166,10 @@ def list_users(db: Session = Depends(get_db)):
         }
         for u in users
     ]
+
+@app.get("/auth/me", response_model=schemas.UserRead)
+def auth_me(current_user: models.Users = Depends(get_current_user)):
+    return current_user
 
 @app.post("/auth/register", response_model=schemas.UserRead)
 def register_user(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
@@ -333,11 +338,28 @@ def my_attendance(
 
 @app.get("/admin/attendance", response_model=list[schemas.AttendanceRead])
 def admin_list_attendance(
+    user_id: int | None = None,
+    date_from: str | None = None,   # "2025-12-14"
+    date_to: str | None = None,     # "2025-12-14"
     db: Session = Depends(get_db),
     admin: models.Users = Depends(require_admin),
 ):
-    rows = db.query(models.Attendance).order_by(models.Attendance.check_in_at.desc()).limit(50).all()
-    return [to_attendance_read(x) for x in rows]
+    q = db.query(models.Attendance)
+
+    if user_id is not None:
+        q = q.filter(models.Attendance.user_id == user_id)
+
+    # filter tanggal: pakai check_in_at
+    if date_from:
+        start = datetime.fromisoformat(date_from + "T00:00:00")
+        q = q.filter(models.Attendance.check_in_at >= start)
+
+    if date_to:
+        end = datetime.fromisoformat(date_to + "T23:59:59")
+        q = q.filter(models.Attendance.check_in_at <= end)
+
+    rows = q.order_by(models.Attendance.id.desc()).limit(500).all()
+    return rows
 
 @app.get("/admin/users", response_model=list[schemas.UserRead])
 def admin_list_users(
@@ -347,25 +369,60 @@ def admin_list_users(
     users = db.query(models.Users).order_by(models.Users.id.asc()).all()
     return users
 
-@app.patch("/admin/users/{user_id}/role", response_model=schemas.UserRead)
-def admin_update_user_role(
-    user_id: int,
-    payload: schemas.UserRoleUpdate,
+@app.post("/admin/users", response_model=schemas.UserRead)
+def admin_create_user(
+    user_in: schemas.UserCreate,
     db: Session = Depends(get_db),
     admin: models.Users = Depends(require_admin),
 ):
-    role = payload.role.upper()
-    if role not in ["STAFF", "ADMIN"]:
-        raise HTTPException(status_code=400, detail="role harus STAFF atau ADMIN")
-    
-    if user.id == admin.id and role != "ADMIN":
-        raise HTTPException(status_code=400, detail="Tidak boleh menurunkan role akun admin sendiri.")
+    # cek email unik
+    existing = db.query(models.Users).filter(models.Users.email == user_in.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
 
-    user = db.query(models.Users).filter(models.User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+    user = models.Users(
+        name=user_in.name,
+        email=user_in.email,
+        password_hash=auth.get_password_hash(user_in.password),
+        role=user_in.role,
+    )
 
-    user.role = role
+    db.add(user)
     db.commit()
     db.refresh(user)
     return user
+
+@app.put("/admin/users/{user_id}", response_model=schemas.UserRead)
+def admin_update_user(
+    user_id: int,
+    payload: schemas.UserUpdate,   # bikin schema update
+    db: Session = Depends(get_db),
+    admin: models.Users = Depends(require_admin),
+):
+    u = db.query(models.Users).filter(models.Users.id == user_id).first()
+    if not u:
+        raise HTTPException(404, "User not found")
+
+    if payload.name is not None:
+        u.name = payload.name
+    if payload.role is not None:
+        u.role = payload.role
+
+    db.commit()
+    db.refresh(u)
+    return u
+
+@app.post("/admin/users/{user_id}/reset-password")
+def admin_reset_password(
+    user_id: int,
+    body: schemas.ResetPasswordIn,
+    db: Session = Depends(get_db),
+    admin: models.Users = Depends(require_admin),
+):
+    u = db.query(models.Users).filter(models.Users.id == user_id).first()
+    if not u:
+        raise HTTPException(404, "User not found")
+
+    u.password_hash = auth.get_password_hash(body.new_password)
+    db.commit()
+    return {"ok": True}

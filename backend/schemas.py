@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, ConfigDict 
+from pydantic import BaseModel, EmailStr, ConfigDict, constr
 from datetime import datetime
 from typing import Optional
 
@@ -20,8 +20,9 @@ class UserRead(BaseModel):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
-class UserRoleUpdate(BaseModel):
-    role: str  # "STAFF" atau "ADMIN"
+class UserUpdate(BaseModel):
+    name: str | None = None
+    role: str | None = None
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -64,3 +65,6 @@ class AttendanceCheckInRequest(BaseModel):
     lat: float
     lng: float
     accuracy_m: float | None = None
+
+class ResetPasswordIn(BaseModel):
+    new_password: constr(min_length=6, max_length=72)
